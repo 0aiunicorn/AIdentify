@@ -1,0 +1,26 @@
+{
+  "images" : [
+    {
+      "filename" : "ChatGPT Image Oct 18, 2025, 11_04_58 AM.png",
+      "idiom" : "universal",
+      "scale" : "1x"
+    },
+    {
+      "filename" : "ChatGPT Image Oct 18, 2025, 11_04_58 AM 1.png",
+      "idiom" : "universal",
+      "scale" : "2x"
+    },
+    {
+      "filename" : "ChatGPT Image Oct 18, 2025, 11_04_58 AM 2.png",
+      "idiom" : "universal",
+      "scale" : "3x"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  },
+  "properties" : {
+    "compression-type" : "automatic"
+  }
+}
