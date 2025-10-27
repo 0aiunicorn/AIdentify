@@ -5,3 +5,5 @@ numpy
 opencv-python-headless
 requests
 yt-dlp
+python-multipart
+exifread

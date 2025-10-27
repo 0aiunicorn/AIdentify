@@ -1,36 +1,28 @@
-from fastapi import FastAPI, File, UploadFile, Form
-from fastapi.middleware.cors import CORSMiddleware
+import multiprocessing
+import subprocess
+import time
+import os
 
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+def start_detector():
+    """Start the detector_server on port 9000"""
+    subprocess.run([
+        "python", "-m", "uvicorn", "detector_server:app",
+        "--host", "0.0.0.0", "--port", "9000"
+    ])
 
-@app.get("/")
-def home():
-    return {"status": "AI Identifier API running"}
+def start_backend():
+    """Start the FastAPI backend_api on port 8000"""
+    subprocess.run([
+        "python", "-m", "uvicorn", "backend_api:app",
+        "--host", "0.0.0.0", "--port", os.environ.get("PORT", "8000")
+    ])
 
-@app.post("/analyze/upload")
-async def analyze_upload(file: UploadFile = File(...)):
-    return {
-        "verdict": "likelyAI",
-        "confidence": 0.82,
-        "evidence": [
-            {"label": "Metadata", "value": "No camera EXIF found"},
-            {"label": "C2PA Credentials", "value": "Not present"}
-        ]
-    }
+if __name__ == "__main__":
+    # Start both in parallel for Render or local dev
+    proc1 = multiprocessing.Process(target=start_detector)
+    proc1.start()
 
-@app.post("/analyze/url")
-async def analyze_url(url: str = Form(...)):
-    return {
-        "verdict": "likelyReal",
-        "confidence": 0.94,
-        "evidence": [
-            {"label": "Source", "value": "Trusted CDN"},
-            {"label": "Metadata", "value": "Contains camera EXIF data"}
-        ]
-    }
+    # Give the detector a few seconds to start up before the backend calls it
+    time.sleep(5)
+
+    start_backend()
