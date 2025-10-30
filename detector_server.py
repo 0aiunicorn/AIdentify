@@ -14,7 +14,14 @@ import numpy as np
 from PIL import Image, ImageChops
 import cv2
 
-app = FastAPI(title="Local Detector", version="1.1")
+# ---- Branding (env override supported) ----
+APP_BRAND = os.getenv("APP_BRAND", "AIdentify")
+
+app = FastAPI(
+    title=f"{APP_BRAND} – Detector",
+    version="1.1",
+    description="Local/media forensics detector",
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -173,7 +180,7 @@ def analyze_video_file(path: str) -> Dict[str, Any]:
 
 @app.get("/")
 def root():
-    return {"status": "AI Identifier API running", "proxy": "detector@9000", "version": "1.1"}
+    return {"status": f"{APP_BRAND} API running", "proxy": "detector@9000", "version": "1.1"}
 
 @app.post("/analyze/image")
 async def analyze_image(file: UploadFile = File(...)):
