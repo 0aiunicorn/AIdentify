@@ -1,27 +1,21 @@
 # detector_server.py — Lightweight media forensics service (local detector)
-# Runs on http://127.0.0.1:9000
-# Requires: fastapi, uvicorn, pillow, numpy, opencv-python-headless
+# Runs on http://0.0.0.0:$PORT (Render sets $PORT)
+# Requires: fastapi, uvicorn, pillow, numpy, opencv-python-headless, requests, yt-dlp
 
 from __future__ import annotations
 from typing import Dict, Any, List
-import io, tempfile, os
+import io, tempfile, os, subprocess, json
 
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import numpy as np
 from PIL import Image, ImageChops
 import cv2
+import requests
 
-# ---- Branding (env override supported) ----
-APP_BRAND = os.getenv("APP_BRAND", "AIdentify")
-
-app = FastAPI(
-    title=f"{APP_BRAND} – Detector",
-    version="1.1",
-    description="Local/media forensics detector",
-)
+app = FastAPI(title="AIdentify Detector", version="1.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -36,20 +30,17 @@ app.add_middleware(
 # ---------------------------
 
 def _to_gray_u8(x) -> np.ndarray:
-    """Convert PIL image or ndarray to single-channel uint8 grayscale."""
     if isinstance(x, Image.Image):
         arr = np.asarray(x.convert("RGB"))
     else:
         arr = x
     if arr.ndim == 3:
-        # treat as RGB; this is robust even if BGR sneaks in
         arr = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     if arr.dtype != np.uint8:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
     return arr
 
 def ela_score(img: Image.Image, q: int = 92) -> float:
-    """Relative reconstruction error (higher ≈ more synthetic/post-processed)."""
     buf = io.BytesIO()
     img.convert("RGB").save(buf, "JPEG", quality=q)
     buf.seek(0)
@@ -59,20 +50,18 @@ def ela_score(img: Image.Image, q: int = 92) -> float:
     return float(np.mean(np.abs(arr))) / 255.0 * 3.0
 
 def laplacian_var_safe(x) -> float:
-    """Laplacian variance with types that avoid unsupported SIMD paths."""
     g = _to_gray_u8(x)
     lap = cv2.Laplacian(g, ddepth=cv2.CV_16S, ksize=3)
     lap_abs = cv2.convertScaleAbs(lap)
     return float(lap_abs.var())
 
 def highfreq_mean_safe(x) -> float:
-    """Mean absolute high-frequency energy in [0..1]."""
     g = _to_gray_u8(x)
     blur = cv2.GaussianBlur(g, (0, 0), sigmaX=1.2)
     hf = cv2.absdiff(g, blur)
     return float(hf.mean()) / 255.0
 
-# Face detector (optional, best-effort)
+# Face detector (optional)
 _FACE = None
 def _face_detector():
     global _FACE
@@ -105,17 +94,14 @@ def analyze_image_pil(im: Image.Image) -> Dict[str, Any]:
         evidence.append({"label": "Laplacian", "value": f"{lap:.1f}"})
         evidence.append({"label": "HighFreq", "value": f"{hf:.2f}"})
 
-        # Fusion heuristic (very basic)
         score = 0.5
         if ela >= 0.60: score += 0.20
         elif ela >= 0.40: score += 0.10
         if lap < 40: score += 0.10
         if hf < 0.12: score += 0.05
-
         score = max(0.0, min(1.0, score))
         verdict = "likelyAI" if score > 0.7 else ("likelyReal" if score < 0.3 else "inconclusive")
         conf = round(abs(score - 0.5) * 2, 2)
-
         return {"verdict": verdict, "confidence": conf, "evidence": evidence}
     except Exception as e:
         return {"verdict": "inconclusive", "confidence": 0.0,
@@ -136,8 +122,7 @@ def sample_frames(path: str, n: int = 8) -> List[np.ndarray]:
             ok, fr = cap.read()
             if not ok: break
             frames.append(fr)
-            if len(frames) >= n:
-                break
+            if len(frames) >= n: break
     finally:
         cap.release()
     return frames
@@ -154,21 +139,18 @@ def analyze_video_file(path: str) -> Dict[str, Any]:
         lap_avg = float(np.mean(laps)) if laps else 0.0
         hf_avg  = float(np.mean(hfs)) if hfs else 0.0
 
-        evidence.append({"label": "Video ELA avg",       "value": f"{0.01:.2f}"})  # ELA on video frames is noisy; omit or keep tiny
+        evidence.append({"label": "Video ELA avg",       "value": f"{0.01:.2f}"})
         evidence.append({"label": "Video HighFreq avg",  "value": f"{hf_avg:.2f}"})
         evidence.append({"label": "Video Laplacian avg", "value": f"{lap_avg:.1f}"})
         evidence.append({"label": "Faces (sum)",         "value": f"{faces}"})
 
-        # Simple fusion
         score = 0.5
         if lap_avg < 60: score += 0.15
         if hf_avg < 0.14: score += 0.10
         if faces == 0: score += 0.05
-
         score = max(0.0, min(1.0, score))
         verdict = "likelyAI" if score > 0.7 else ("likelyReal" if score < 0.3 else "inconclusive")
         conf = round(abs(score - 0.5) * 2, 2)
-
         return {"verdict": verdict, "confidence": conf, "evidence": evidence}
     except Exception as e:
         return {"verdict": "inconclusive", "confidence": 0.0,
@@ -180,7 +162,7 @@ def analyze_video_file(path: str) -> Dict[str, Any]:
 
 @app.get("/")
 def root():
-    return {"status": f"{APP_BRAND} API running", "proxy": "detector@9000", "version": "1.1"}
+    return {"status": "AI Identifier API running", "proxy": "detector@cloud", "version": "1.1"}
 
 @app.post("/analyze/image")
 async def analyze_image(file: UploadFile = File(...)):
@@ -200,3 +182,48 @@ async def analyze_video(file: UploadFile = File(...)):
     finally:
         try: os.remove(path)
         except: pass
+
+@app.post("/analyze/url")
+async def analyze_url(url: str = Form(...)):
+    """Download a video URL (YouTube/direct MP4) and analyze it."""
+    # First try direct GET (fast path for direct mp4 links)
+    try:
+        with requests.get(url, timeout=15, stream=True, allow_redirects=True) as r:
+            ct = r.headers.get("content-type", "").lower()
+            if r.ok and ("video/" in ct or url.lower().endswith((".mp4",".mov",".m4v",".webm"))):
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+                    for chunk in r.iter_content(1024*256):
+                        if not chunk: break
+                        tmp.write(chunk)
+                res = analyze_video_file(tmp.name)
+                os.remove(tmp.name)
+                res.setdefault("evidence", []).insert(0, {"label": "Fetch", "value": "Direct GET"})
+                return JSONResponse(res)
+    except Exception:
+        pass
+
+    # Fallback to yt-dlp (handles YouTube and many sites)
+    with tempfile.TemporaryDirectory() as tdir:
+        outfile = os.path.join(tdir, "clip.%(ext)s")
+        cmd = ["yt-dlp", "-f", "bv*[ext=mp4][height<=720]+ba[ext=m4a]/b[ext=mp4][height<=720]/best",
+               "-o", outfile, url]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=120)
+            # Find the downloaded file (clip.mp4 / clip.webm etc.)
+            cand = None
+            for name in os.listdir(tdir):
+                if name.startswith("clip.") and not name.endswith(".part"):
+                    cand = os.path.join(tdir, name); break
+            if not cand:
+                return JSONResponse({"verdict":"inconclusive","confidence":0.0,
+                                     "evidence":[{"label":"Fetch","value":"yt-dlp: downloaded file not found"}]}, status_code=200)
+            res = analyze_video_file(cand)
+            res.setdefault("evidence", []).insert(0, {"label": "Fetch", "value": "yt-dlp downloaded"})
+            return JSONResponse(res)
+        except subprocess.CalledProcessError as e:
+            msg = e.stderr.strip()[:400]
+            return JSONResponse({"verdict":"inconclusive","confidence":0.0,
+                                 "evidence":[{"label":"Fetch","value": f"yt-dlp error: {msg}"}]}, status_code=200)
+        except Exception as e:
+            return JSONResponse({"verdict":"inconclusive","confidence":0.0,
+                                 "evidence":[{"label":"Fetch","value": f"Error: {e}"}]}, status_code=200)
